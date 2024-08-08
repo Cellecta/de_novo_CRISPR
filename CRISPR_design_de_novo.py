@@ -462,7 +462,7 @@ def main(targets, reference, exclude=None, nontargeting=False, number=10):
                 result = [(v,w, x[:20], y, test(x[:20]), specificities.get(x, -1)[0], specificities.get(x, -1)[1], z, len(target.seq), off_target_format(specificities, x)[0], off_target_format(specificities, x)[1], off_target_format(specificities, x)[2], off_target_format(specificities, x)[3]) for v, w, x, y, z in (
                     (i[3], i[2], i[1][4:27].upper(), i[1][24:27].upper(), j) for i, j in zip(hits, activities))]
                 print('# Obtained', len(result), 'candidate guides.')
-                result.sort(key=lambda x: (x[3], x[4], x[5]), reverse=True)
+                result.sort(key=lambda x: (x[7], x[5], x[6]), reverse=True)
                 for row in result[:number]:
                     yield (n + 1, target.id) + row
     
