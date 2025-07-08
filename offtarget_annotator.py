@@ -9,6 +9,43 @@ from scoring import calcCfdScore, calcMitGuideScore  # Make sure scoring.py is a
 import pickle
 import os
 from Bio.Seq import Seq
+import re
+
+
+
+from pybedtools import BedTool
+
+def check_sgrna_overlap_gnomad(chrom, cut_pos, strand, gnomad_bed_path):
+    """
+    Check if a single sgRNA cut site overlaps any gnomAD variant.
+
+    Parameters:
+        chrom (str): Chromosome (e.g., 'chr1')
+        cut_pos (int): 1-based cut position of the sgRNA
+        strand (str): '+' or '-'
+        gnomad_bed_path (str): Path to gnomAD BED file
+
+    Returns:
+        list of tuples: Each tuple is (chrom, pos, strand, gnomad_variant_line)
+    """
+    # Convert cut_pos to 0-based BED format
+    start = cut_pos - 1
+    end = cut_pos
+    bed_line = f"{chrom}\t{start}\t{end}\tsgRNA\t0\t{strand}"
+
+    sgrna_bed = BedTool(bed_line, from_string=True)
+    gnomad_bed = BedTool(gnomad_bed_path)
+
+    overlaps = sgrna_bed.intersect(gnomad_bed, wa=True, wb=True)
+
+    hits = []
+    for entry in overlaps:
+        gnomad_info = entry[9]
+        hits.append(gnomad_info)
+
+    return ",".join(hits)
+
+
 
 def parse_xa_tag(xa_string):
     xa_data = xa_string.replace('XA:Z:', '').strip().split(';')
@@ -19,8 +56,6 @@ def parse_xa_tag(xa_string):
         strand = strand_pos[0]
         pos = int(strand_pos[1:])
         yield chrom, strand, pos, cigar, int(mm)
-
-
         
 
 def build_feature_trees(gtf_file):
@@ -110,10 +145,132 @@ def extract_sequence(genome_dict, chrom, strand, pos, length=23):
     seq = genome_dict[chrom].seq[start:start+length]
     return str(seq.reverse_complement() if strand == '-' else seq)
 
-def summarize_results_by_guide(results, summary_output=None):
+# def extract_guide_genome_position(cds_id, guide, off_target_dict, mane_transcripts):
+#     """
+#     Return genomic position of guide cut and fraction of MANE isoforms matched (from CDS annotations).
+
+#     Parameters:
+#         cds_id (str): Gene or CDS ID of interest
+#         guide (str): Guide RNA sequence
+#         off_target_dict (dict): Guide → list of dicts with BWA hits and annotations
+#         mane_transcripts (list): List of MANE transcript IDs (with or without version)
+
+#     Returns:
+#         tuple: (chrom, cut_pos, strand, isoform_fraction) or None
+#     """
+#     info_list = off_target_dict.get(guide)
+#     if not info_list:
+#         return None
+
+#     # Preprocess MANE list: strip transcript versions
+#     mane_clean = set(t.split('.')[0] for t in mane_transcripts)
+
+#     for hit in info_list:
+#         if hit.get('mismatches') != 0:
+#             continue
+
+#         seq = hit.get('sequence', '').upper()
+#         if not seq or len(seq) != 23 or not seq[-2:] == 'GG':
+#             continue  # must be perfect match with NGG PAM
+
+#         annotations = hit.get('annotations', [])
+#         if not any(cds_id in ann for ann in annotations):
+#             continue
+
+#         chrom = hit.get('chrom')
+#         pos = hit.get('position')
+#         strand = hit.get('strand')
+#         if None in (chrom, pos, strand):
+#             continue
+
+#         # Cut site logic
+#         cut_pos = pos + 17 if strand == '+' else pos + 6
+
+#         # Extract transcript IDs from CDS annotations only
+#         cds_transcripts = set()
+#         for ann in annotations:
+#             if ann.startswith("CDS:"):
+#                 match = re.match(r'CDS:[^/]+/([^ ]+)', ann)
+#                 if match:
+#                     tx_id = match.group(1).split('.')[0]  # strip version
+#                     cds_transcripts.add(tx_id)
+           
+
+#         matched = mane_clean & cds_transcripts
+#         isoform_fraction = round(len(matched) / len(mane_clean), 3) if mane_clean else 0.0
+
+#         return chrom, cut_pos, strand, isoform_fraction
+
+#     return None
+
+
+def extract_guide_genome_position(cds_id, guide, off_target_dict, mane_transcripts):
+    """
+    Return all genomic positions of guide cut and fraction of MANE isoforms matched (from CDS annotations).
+
+    Parameters:
+        cds_id (str): Gene or CDS ID of interest
+        guide (str): Guide RNA sequence (23 bp including PAM)
+        off_target_dict (dict): Guide → list of dicts with BWA hits and annotations
+        mane_transcripts (list): List of MANE transcript IDs (with or without version)
+
+    Returns:
+        list of tuples: Each tuple is (chrom, cut_pos, strand, isoform_fraction)
+    """
+    info_list = off_target_dict.get(guide)
+    if not info_list:
+        return []
+
+    mane_clean = set(t.split('.')[0] for t in mane_transcripts)
+    results = []
+
+    for hit in info_list:
+        if hit.get('mismatches') != 0:
+            continue
+
+        seq = hit.get('sequence', '').upper()
+        if not seq or len(seq) != 23 or not seq[-2:] == 'GG':
+            continue  # must be a perfect match with NGG PAM
+
+        annotations = hit.get('annotations', [])
+        if not any(cds_id in ann for ann in annotations):
+            continue
+
+        chrom = hit.get('chrom')
+        pos = hit.get('position')
+        strand = hit.get('strand')
+        if None in (chrom, pos, strand):
+            continue
+
+        # Cut site logic (3 bp upstream of PAM)
+        cut_pos = pos + 17 if strand == '+' else pos + 6
+
+        # Extract transcript IDs from CDS annotations only
+        cds_transcripts = set()
+        for ann in annotations:
+            if ann.startswith("CDS:"):
+                match = re.match(r'CDS:[^/]+/([^ ]+)', ann)
+                if match:
+                    tx_id = match.group(1).split('.')[0]  # strip version
+                    cds_transcripts.add(tx_id)
+
+        matched = mane_clean & cds_transcripts
+        isoform_fraction = round(len(matched) / len(mane_clean), 3)*100 if mane_clean else 0.0
+
+        results.append((chrom, cut_pos, strand, isoform_fraction))
+
+    return results
+
+
+
+
+
+
+def summarize_results_by_guide(results, cds_id, mane_transcripts, summary_output=None):
     summary_dict = {}
 
     for guide_seq, alignments in results.items():
+
         total = len(alignments)
         match_1_20 = 0
         match_3_20 = 0
@@ -141,35 +298,53 @@ def summarize_results_by_guide(results, summary_output=None):
 
         avg_cfd = round(calcMitGuideScore(sum(cfd_all)) if cfd_all else 0.0, 4)
         avg_cfd_cds = round(calcMitGuideScore(sum(cfd_cds)) if cfd_cds else 0.0, 4)
+        positions = extract_guide_genome_position(cds_id, guide_seq, results, mane_transcripts)
+        if not positions:
+                positions = [(None, None, None, None)]
 
-        summary_dict[guide_seq] = {
-            "total_alignments": total,
-            "perfect_match_1_20": match_1_20,
-            "perfect_match_3_20": match_3_20,
-            "perfect_match_1_20_CDS": match_1_20_cds,
-            "perfect_match_3_20_CDS": match_3_20_cds,
-            "cfd_all": avg_cfd,
-            "cfd_CDS": avg_cfd_cds
-        }
+        for chrom, cut_pos, strand, isoform_fra in positions:
+            if chrom is not None:
+                gnomAD = check_sgrna_overlap_gnomad(chrom, cut_pos, strand, './region_subset.bed')
+            else:
+                gnomAD = ''
 
-    # Optional: save to CSV or JSON
+            # Create unique key for each guide + cut site
+            unique_key = f"{guide_seq}_{chrom}_{cut_pos}_{strand}"
+
+            if unique_key not in summary_dict:
+                    summary_dict[unique_key] = {
+                        "guide": guide_seq,
+                        "chr": chrom,
+                        "cut_pos": cut_pos,
+                        "strand": strand,
+                        "total_alignments": total,
+                        "perfect_match_1_20": match_1_20,
+                        "perfect_match_3_20": match_3_20,
+                        "perfect_match_1_20_CDS": match_1_20_cds,
+                        "perfect_match_3_20_CDS": match_3_20_cds,
+                        "cfd_all": avg_cfd,
+                        "cfd_CDS": avg_cfd_cds,
+                        "Isoform_fra": isoform_fra,
+                        "gnomAD": gnomAD
+                    }
+
+    # Optional: Save output
     if summary_output:
         if summary_output.endswith(".json"):
             with open(summary_output, "w") as f:
                 json.dump(summary_dict, f, indent=2)
         elif summary_output.endswith(".csv"):
-            import csv
-            # flatten dict for CSV output; each row gets the guide as a column
-            fieldnames = ["guide", "total_alignments", "perfect_match_1_20",
-                          "perfect_match_3_20", "perfect_match_1_20_CDS",
-                          "perfect_match_3_20_CDS", "cfd_all", "cfd_CDS"]
+            fieldnames = [
+                "guide", "chr", "cut_pos", "strand",
+                "total_alignments", "perfect_match_1_20", "perfect_match_3_20",
+                "perfect_match_1_20_CDS", "perfect_match_3_20_CDS",
+                "cfd_all", "cfd_CDS", "Isoform_fra", "gnomAD"
+            ]
             with open(summary_output, "w", newline='') as f:
                 writer = csv.DictWriter(f, fieldnames=fieldnames)
                 writer.writeheader()
-                for guide, data in summary_dict.items():
-                    row = {"guide": guide}
-                    row.update(data)
-                    writer.writerow(row)
+                for data in summary_dict.values():
+                    writer.writerow(data)
 
     return summary_dict
 
@@ -178,17 +353,17 @@ def summarize_results_by_guide(results, summary_output=None):
 
 
 
-def main(sam_file, genome_fasta, gtf_path):
+
+def main(sam_file, genome_fasta, gtf_trees, cds_id_list, mane_transcripts):
     print("[INFO] Loading reference genome...")
     genome = SeqIO.to_dict(SeqIO.parse(genome_fasta, "fasta"))
-
-    print("[INFO] Loading gene annotations...")
-    gtf_trees = build_feature_trees_cached(gtf_path)
-
     results = defaultdict(list)
 
     print(f"[INFO] Reading SAM file: {sam_file}")
+
+
     with open(sam_file) as f:
+        index = 0
         for line in f:
             if line.startswith('@'):
                 continue
@@ -199,6 +374,7 @@ def main(sam_file, genome_fasta, gtf_path):
             pos = int(fields[3])
             strand = '-' if (flag & 16) else '+'
             annots, cds_gene_list = annotate_hit(chrom, pos, strand, gtf_trees)
+            cds_id = cds_id_list[index]
 
             results[guide_seq].append({
                     "chrom": chrom,
@@ -257,7 +433,7 @@ def main(sam_file, genome_fasta, gtf_path):
                     "cds_gene_count": len(cds_gene_list)
                 })
 
-    return summarize_results_by_guide(results)
+    return summarize_results_by_guide(results, cds_id, mane_transcripts)
 
 
 
@@ -266,7 +442,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--sam", required=True)
     parser.add_argument("--fasta", required=True)
-    parser.add_argument("--gtf", required=True)
+    parser.add_argument("--gtf_trees", required=True)
     parser.add_argument("--out", default="summary.json")
     args = parser.parse_args()
 

@@ -31,7 +31,7 @@ def check_restriction_sites(dna_seq: str, enzymes=None):
     result = batch.search(seq_obj)
 
     # Return enzyme names that cut the sequence
-    return [enzyme.__name__ for enzyme, sites in result.items() if sites]
+    return ",".join([enzyme.__name__ for enzyme, sites in result.items() if sites])
 
 def get_pams(seq: str):
     """
@@ -55,7 +55,7 @@ def get_pams(seq: str):
         pam = context_30nt[24:27]
         guide_pam = guide_seq + pam
         position = match.start()
-        cut_site = position + 17
+        cut_site = position + 21
         yield {
             "position": position,
             "context_30nt": context_30nt,
@@ -77,7 +77,7 @@ def get_pams(seq: str):
         pam = rc_30mer[24:27]
         guide_pam = guide_seq + pam
         position = match.start()
-        cut_site = position + 30 - 17
+        cut_site = position + 30 - 21
         yield {
             "position": position,
             "context_30nt": rc_30mer,
